@@ -27,23 +27,22 @@ L1d = lambda e, v: sp.diff(e, v[0])
 f1d = lambda x: np.cos(x[0])
 u1d = lambda x: np.sin(x)
 
-n, N = 2, 10
+n, N = 10, 10
 X = np.sort(rng.uniform(0, 2 * np.pi, n))[:, None]
 y = u1d(X[:, 0]) + 0.05 * rng.standard_normal(n)
 Xp = np.linspace(0, 2 * np.pi, N)[:, None]                 # collocation points
-print("shapes:", Xp.shape, X.shape, y.shape)
 Xt = np.linspace(0, 2 * np.pi, 400)[:, None]
 
-pi = PISVR(1, 1.0, 0.1, 10, 0.0, 100, L1d, f1d).fit(X, y, Xp)
-base = PISVR(1, 1.0, 0.1, 10, 0.0, 0.0, L1d, f1d).fit(X, y, Xp[:1])   # C2=0 -> plain SVR
+pi1 = PISVR(1, 0.1, 0.1, 10, 0.1, 100, L1d, f1d).fit_cvxpylayer_bfgs(X, y, Xp, n_splits=3)
+base = PISVR(1, 0.1, 0.1, 10, 0.0, 0.0, L1d, f1d).fit_cvxpylayer_bfgs(X, y, Xp[:1], n_splits=3)   # C2=0 -> plain SVR
 
-print(f"[1-D]  RMSE plain SVR: {rmse(base.predict(Xt), u1d(Xt[:, 0])):.4f}   "
-      f"PISVR: {rmse(pi.predict(Xt), u1d(Xt[:, 0])):.4f}")
-
+print(f"[1-D]  RMSE")
+print(f"  plain SVR: {rmse(base.predict(Xt), u1d(Xt[:, 0])):.4f}")
+print(f"  PISVR BFGS: {rmse(pi1.predict(Xt), u1d(Xt[:, 0])):.4f}")
 fig, ax = plt.subplots(figsize=(8, 4.5))
 ax.plot(Xt[:, 0], u1d(Xt[:, 0]), "k--", label="exact  sin(x)")
 ax.plot(Xt[:, 0], base.predict(Xt), color="tab:orange", label="plain SVR (C2=0)")
-ax.plot(Xt[:, 0], pi.predict(Xt), color="tab:blue", lw=2, label="PISVR")
+ax.plot(Xt[:, 0], pi1.predict(Xt), color="tab:blue", lw=2, label="PISVR")
 ax.scatter(X[:, 0], y, c="k", s=25, zorder=3, label="data")
 ax.scatter(Xp[:, 0], np.full(N, ax.get_ylim()[0]), marker="|", c="tab:green", s=60,
            label="collocation points")
@@ -61,7 +60,7 @@ lap = lambda e, v: sum(sp.diff(e, vi, 2) for vi in v)
 f2d = lambda x: -2 * np.sin(x[0]) * np.cos(x[1])
 u2d = lambda X: np.sin(X[:, 0]) * np.cos(X[:, 1])
 
-n, N = 20, 5
+n, N = 5, 5
 X2 = rng.uniform(0, 2 * np.pi, (n, 2))
 y2 = u2d(X2) + 0.1 * rng.standard_normal(n)
 
@@ -73,11 +72,17 @@ G1, G2 = np.meshgrid(g, g)
 Xg = np.column_stack([G1.ravel(), G2.ravel()])
 U = u2d(Xg)
 
-pi2 = PISVR(2, 0.1, 0.1, 10, 0.0, 100, lap, f2d).fit(X2, y2, Xp2)
-base2 = PISVR(2, 0.1, 0.1, 10, 0.0, 0.0, lap, f2d).fit(X2, y2, Xp2[:1])
-Up, Ub = pi2.predict(Xg), base2.predict(Xg)
+pi21 = PISVR(2, 0.1, 0.1, 10, 0.1, 100, lap, f2d).fit(X2, y2, Xp2)
+pi22 = PISVR(2, 0.1, 0.1, 10, 0.1, 100, lap, f2d).fit_cvxpylayer_bfgs(X2, y2, Xp2, n_splits=5)
+base21 = PISVR(2, 0.1, 0.1, 10, 0.0, 0.0, lap, f2d).fit(X2, y2, Xp2[:1])
+base22 = PISVR(2, 0.1, 0.1, 10, 0.0, 0.0, lap, f2d).fit_cvxpylayer_bfgs(X2, y2, Xp2[:1], n_splits=5)
+Up, Ub = pi22.predict(Xg), base22.predict(Xg)
 
-print(f"[2-D]  RMSE plain SVR: {rmse(Ub, U):.4f}   PISVR: {rmse(Up, U):.4f}")
+print(f"[2-D]  RMSE")
+print(f"PISVR: {rmse(pi21.predict(Xg), U)}")
+print(f"PISVR (HPO): {rmse(pi22.predict(Xg), U)}")
+print(f"SVR: {rmse(base21.predict(Xg), U)}")
+print(f"SVR (HPO): {rmse(base22.predict(Xg), U)}")
 
 fig, axs = plt.subplots(2, 3, figsize=(14, 8.5), constrained_layout=True)
 lv = np.linspace(-1.1, 1.1, 23)

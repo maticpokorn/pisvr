@@ -5,7 +5,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from pisvr import PISVR
+from pisvr import PDE, PISVR
 
 rng = np.random.default_rng(0)
 rmse = lambda a, b: np.sqrt(np.mean((a - b) ** 2))
@@ -26,15 +26,16 @@ rmse = lambda a, b: np.sqrt(np.mean((a - b) ** 2))
 L1d = lambda e, v: sp.diff(e, v[0])
 f1d = lambda x: np.cos(x[0])
 u1d = lambda x: np.sin(x)
+pde1d = PDE(L1d, f1d)
 
-n, N = 10, 10
+n, N = 20, 20
 X = np.sort(rng.uniform(0, 2 * np.pi, n))[:, None]
-y = u1d(X[:, 0]) + 0.05 * rng.standard_normal(n)
+y = u1d(X[:, 0]) + 0.1 * rng.standard_normal(n)
 Xp = np.linspace(0, 2 * np.pi, N)[:, None]                 # collocation points
 Xt = np.linspace(0, 2 * np.pi, 400)[:, None]
 
-pi1 = PISVR(1, 0.1, 0.1, 10, 0.1, 100, L1d, f1d).fit_cvxpylayer_bfgs(X, y, Xp, n_splits=3)
-base = PISVR(1, 0.1, 0.1, 10, 0.0, 0.0, L1d, f1d).fit_cvxpylayer_bfgs(X, y, Xp[:1], n_splits=3)   # C2=0 -> plain SVR
+pi1 = PISVR(1, 0.1, 0.5, 10, 0.1, 100, pde1d).fit_cvxpylayer_bfgs(X, y, Xp, n_splits=3)
+base = PISVR(1, 0.1, 0.5, 10, 0.0, 0.0, pde1d).fit_cvxpylayer_bfgs(X, y, Xp[:1], n_splits=3)   # C2=0 -> plain SVR
 
 print(f"[1-D]  RMSE")
 print(f"  plain SVR: {rmse(base.predict(Xt), u1d(Xt[:, 0])):.4f}")
@@ -59,8 +60,9 @@ fig.savefig("pisvr_1d.png", dpi=130)
 lap = lambda e, v: sum(sp.diff(e, vi, 2) for vi in v)
 f2d = lambda x: -2 * np.sin(x[0]) * np.cos(x[1])
 u2d = lambda X: np.sin(X[:, 0]) * np.cos(X[:, 1])
+pde2d = PDE(lap, f2d)
 
-n, N = 5, 5
+n, N = 10, 10
 X2 = rng.uniform(0, 2 * np.pi, (n, 2))
 y2 = u2d(X2) + 0.1 * rng.standard_normal(n)
 
@@ -72,10 +74,10 @@ G1, G2 = np.meshgrid(g, g)
 Xg = np.column_stack([G1.ravel(), G2.ravel()])
 U = u2d(Xg)
 
-pi21 = PISVR(2, 0.1, 0.1, 10, 0.1, 100, lap, f2d).fit(X2, y2, Xp2)
-pi22 = PISVR(2, 0.1, 0.1, 10, 0.1, 100, lap, f2d).fit_cvxpylayer_bfgs(X2, y2, Xp2, n_splits=5)
-base21 = PISVR(2, 0.1, 0.1, 10, 0.0, 0.0, lap, f2d).fit(X2, y2, Xp2[:1])
-base22 = PISVR(2, 0.1, 0.1, 10, 0.0, 0.0, lap, f2d).fit_cvxpylayer_bfgs(X2, y2, Xp2[:1], n_splits=5)
+pi21 = PISVR(2, 0.1, 0.1, 10, 0.1, 100, pde2d).fit(X2, y2, Xp2)
+pi22 = PISVR(2, 0.1, 0.1, 10, 0.1, 100, pde2d).fit_cvxpylayer_bfgs(X2, y2, Xp2, n_splits=3)
+base21 = PISVR(2, 0.1, 0.1, 10, 0.0, 0.0, pde2d).fit(X2, y2, Xp2[:1])
+base22 = PISVR(2, 0.1, 0.1, 10, 0.0, 0.0, pde2d).fit_cvxpylayer_bfgs(X2, y2, Xp2[:1], n_splits=3)
 Up, Ub = pi22.predict(Xg), base22.predict(Xg)
 
 print(f"[2-D]  RMSE")
@@ -119,6 +121,7 @@ alpha, T = 0.3, np.pi
 Lheat = lambda e, v: sp.diff(e, v[2]) - alpha * (sp.diff(e, v[0], 2) + sp.diff(e, v[1], 2))
 fheat = lambda p: np.sin(p[0]) * np.sin(p[1]) * (2 * alpha * np.cos(p[2]) - np.sin(p[2]))
 uheat = lambda P: np.sin(P[:, 0]) * np.sin(P[:, 1]) * np.cos(P[:, 2])
+pdeheat = PDE(Lheat, fheat)
 
 def heat_data(seed, n=40):                       # scattered noisy space-time samples
     r = np.random.default_rng(100 + seed)
@@ -138,8 +141,8 @@ n_seeds = 12
 res = []
 for s in tqdm(range(n_seeds)):
     Xs, ys = heat_data(s)
-    e_pi = rmse(PISVR(*heat_args, 100, Lheat, fheat).fit(Xs, ys, Xp3).predict(Pt), uheat(Pt))
-    e_base = rmse(PISVR(*heat_args, 0.0, Lheat, fheat).fit(Xs, ys, Xp3[:1]).predict(Pt), uheat(Pt))
+    e_pi = rmse(PISVR(*heat_args, 100, pdeheat).fit(Xs, ys, Xp3).predict(Pt), uheat(Pt))
+    e_base = rmse(PISVR(*heat_args, 0.0, pdeheat).fit(Xs, ys, Xp3[:1]).predict(Pt), uheat(Pt))
     res.append((e_pi, e_base))
 res = np.array(res)
 print(f"[heat] over {n_seeds} data sets:  PISVR {res[:, 0].mean():.3f} +/- {res[:, 0].std():.3f}   "
@@ -148,8 +151,8 @@ print(f"[heat] over {n_seeds} data sets:  PISVR {res[:, 0].mean():.3f} +/- {res[
 
 # The figures below use the FIRST data set of that study (seed 0), not one chosen for its outcome.
 X3, y3 = heat_data(0)
-pi3 = PISVR(*heat_args, 100, Lheat, fheat).fit(X3, y3, Xp3)
-base3 = PISVR(*heat_args, 0.0, Lheat, fheat).fit(X3, y3, Xp3[:1])
+pi3 = PISVR(*heat_args, 100, pdeheat).fit(X3, y3, Xp3)
+base3 = PISVR(*heat_args, 0.0, pdeheat).fit(X3, y3, Xp3[:1])
 print(f"[heat] plotted data set (seed 0):  plain SVR {res[0, 1]:.3f}   PISVR {res[0, 0]:.3f}")
 
 # evaluation helpers

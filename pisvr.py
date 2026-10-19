@@ -182,6 +182,58 @@ class PISVR:
             fold_mses.append(mean_squared_error)
         return jnp.mean(jnp.array(fold_mses))
 
+    def forward_pass_collocation_mse(self, params):
+        """Weighted data + PDE-residual objective: lambda_data=C1, lambda_phys=C2."""
+        if self.optimize_pde_hyperparams:
+            pde_hyperparams = params[:len(self.pde_hyperparams)]
+        else:
+            pde_hyperparams = self.pde_hyperparam_values
+
+        if "lam" in self.svr_hyperparams:
+            lam = params[self.lam_index]
+        else:
+            lam = self.lam
+        if "C1" in self.svr_hyperparams:
+            C1 = params[self.C1_index]
+        else:
+            C1 = self.C1
+        if "C2" in self.svr_hyperparams:
+            C2 = params[self.C2_index]
+        else:
+            C2 = self.C2
+
+        n_data, n_phys = len(self.X_data), len(self.X_phys)
+        layer_key = (n_data, n_phys)
+        if not hasattr(self, "_collocation_layer") or self._collocation_layer is None:
+            self._collocation_layer = {}
+        if layer_key not in self._collocation_layer:
+            self._collocation_layer[layer_key] = self.define_cvxpylayer(n_data, n_phys)
+
+        P = self.P(self.X_data, self.X_phys, lam, pde_hyperparams)
+        Lt = jnp.linalg.cholesky(P + 1e-6 * jnp.eye(P.shape[0])).T
+        q = self.q(self.y_data, self.X_phys, self.eps1, self.eps2)
+        A_eq, b = self.eq(n_data, n_phys)
+        lb, ub = self.bounds(n_data, n_phys, C1, C2)
+        x, mu = self._collocation_layer[layer_key](Lt, q, A_eq, b, lb, ub)
+        alpha = x[:n_data] - x[n_data:2 * n_data]
+        beta = x[2 * n_data:2 * n_data + n_phys] - x[2 * n_data + n_phys:]
+
+        data_pred = (
+            self.RBF(self.X_data, self.X_data, lam, pde_hyperparams) @ alpha
+            + self.Lx2RBF(self.X_data, self.X_phys, lam, pde_hyperparams) @ beta
+            + mu[0]
+        )
+        data_mse = jnp.mean((self.y_data - data_pred) ** 2)
+
+        pde_err = (
+            self.Lx1RBF(self.X_phys, self.X_data, lam, pde_hyperparams) @ alpha
+            + self.Lx1Lx2RBF(self.X_phys, self.X_phys, lam, pde_hyperparams) @ beta
+            + self.L1 * mu[0]
+            - self.f_values(self.X_phys)
+        )
+        pde_mse = jnp.mean(pde_err ** 2)
+        return 100.0 * data_mse + 1.0 * pde_mse
+
     def fit_cvxpylayer_bfgs_qp(self, X_data, y_data, X_phys):
         self.X_data = jnp.asarray(X_data)
         self.y_data = jnp.asarray(y_data)
@@ -286,6 +338,81 @@ class PISVR:
                 self.pde_hyperparam_values = optimized_values
                 self.pde_hyperparams = dict(zip(self.pde_hyperparam_sym, optimized_values))
             return self.fit(self.X_data, self.y_data, self.X_phys)
+
+    def fit_cvxpylayer_bfgs_collocation(
+        self, X_data, y_data, X_phys, optimize_pde_hyperparams=False, svr_hyperparams=None,
+    ):
+        """Optimize the collocation MSE objective with L-BFGS-B without cross-validation."""
+        self.optimize_pde_hyperparams = optimize_pde_hyperparams
+        self.svr_hyperparams = svr_hyperparams
+
+        if svr_hyperparams is None and not optimize_pde_hyperparams:
+            raise ValueError("No hyperparameters provided for optimization.")
+
+        self.X_data = jnp.asarray(X_data)
+        self.y_data = jnp.asarray(y_data)
+        self.X_phys = jnp.asarray(X_phys)
+
+        x0 = []
+        bounds = []
+        if optimize_pde_hyperparams:
+            if self.pde_hyperparams is None:
+                raise ValueError("PDE hyperparameters are not defined. Cannot optimize them.")
+            x0.extend(self.pde_hyperparams.values())
+            bounds.extend([(None, None)] * len(self.pde_hyperparams))
+
+        self.lam_index = None
+        self.C1_index = None
+        self.C2_index = None
+        if svr_hyperparams is not None:
+            if "lam" in svr_hyperparams:
+                self.lam_index = len(x0)
+                x0.append(self.lam)
+                bounds.append((1e-6, None))
+            if "C1" in svr_hyperparams:
+                self.C1_index = len(x0)
+                x0.append(self.C1)
+                bounds.append((0.0, None))
+            if "C2" in svr_hyperparams:
+                self.C2_index = len(x0)
+                x0.append(self.C2)
+                bounds.append((0.0, None))
+
+        n_data, n_phys = len(self.X_data), len(self.X_phys)
+        self.layers = [self.define_cvxpylayer(n_data, n_phys)]
+        self._collocation_layer = {(n_data, n_phys): self.layers[0]}
+
+        print(
+            "Starting collocation-only BFGS optimization from x0; "
+            f"parameters={x0}, bounds={bounds}"
+        )
+        result = minimize(
+            self.forward_pass_collocation_mse,
+            x0=np.asarray(x0, dtype=float),
+            method="L-BFGS-B",
+            bounds=bounds,
+            jac=jax.grad(self.forward_pass_collocation_mse, argnums=(0,)),
+        )
+        if not np.isfinite(result.fun):
+            raise RuntimeError("Collocation-only BFGS optimization did not produce a finite objective value.")
+
+        print(
+            f"Collocation BFGS result: MSE={result.fun:.6g}, success={result.success}: "
+            f"{result.message}"
+        )
+
+        x = result.x
+        if self.lam_index is not None:
+            self.lam = x[self.lam_index]
+        if self.C1_index is not None:
+            self.C1 = x[self.C1_index]
+        if self.C2_index is not None:
+            self.C2 = x[self.C2_index]
+        if optimize_pde_hyperparams:
+            optimized_values = list(map(float, x[:len(self.pde_hyperparams)]))
+            self.pde_hyperparam_values = optimized_values
+            self.pde_hyperparams = dict(zip(self.pde_hyperparam_sym, optimized_values))
+        return self.fit(self.X_data, self.y_data, self.X_phys)
 
     def fit_cvxpylayer_gradient_descent(
         self, X_data, y_data, X_phys, n_splits=10,

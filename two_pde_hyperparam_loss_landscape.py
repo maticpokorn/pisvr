@@ -50,8 +50,8 @@ def make_problem():
     )
 
     rng = np.random.default_rng(42)
-    X_data = rng.uniform(0.0, np.pi, size=(24, 2))
-    y_data = exact_solution(X_data) + 0.05 * rng.standard_normal(len(X_data))
+    X_data = rng.uniform(0.0, np.pi, size=(60, 2))
+    y_data = exact_solution(X_data)
 
     # Enforce the homogeneous Dirichlet boundary condition by adding zero-valued
     # samples on the square boundary x=0, x=pi, y=0, and y=pi.
@@ -74,9 +74,9 @@ def make_problem():
     model = PISVR(
         m=2,
         lam=0.3,
-        eps1=0.02,
+        eps1=0.01,
         C1=10.0,
-        eps2=0.01,
+        eps2=0.0,
         C2=10.0,
         pde=pde,
     )
@@ -118,7 +118,7 @@ def plot_loss_landscapes():
     diffusion_x_values = np.linspace(0.2, 2.0, 12)
     diffusion_y_values = np.linspace(0.05, 1.0, 12)
     qp_objective = np.empty((len(diffusion_x_values), len(diffusion_y_values)))
-    cv_mse = np.empty_like(qp_objective)
+    collocation_mse = np.empty_like(qp_objective)
 
     candidates = [
         (float(dx), float(dy))
@@ -133,13 +133,13 @@ def plot_loss_landscapes():
         model.pde_hyperparams = dict(zip(model.pde_hyperparam_sym, model.pde_hyperparam_values))
         model.fit(model.X_data, model.y_data, model.X_phys)
         qp_objective[i, j] = model.obj
-        cv_mse[i, j] = float(model.forward_pass(params))
+        collocation_mse[i, j] = float(model.forward_pass_collocation_mse(params))
 
     x_grid, y_grid = np.meshgrid(diffusion_x_values, diffusion_y_values, indexing="ij")
 
     for title, values, filename, show_traj in [
         ("PISVR quadratic objective", qp_objective, "loss_landscape_2param_qp.png", False),
-        (f"{n_splits}-fold CV MSE", cv_mse, "loss_landscape_2param_cv_mse.png", True),
+        ("collocation MSE", collocation_mse, "loss_landscape_2param_collocation_mse.png", True),
     ]:
         minimum_index = np.unravel_index(np.argmin(values), values.shape)
         best_x = float(diffusion_x_values[minimum_index[0]])
@@ -183,19 +183,19 @@ def plot_loss_landscapes():
             ]
             optimization_runs = []
             for start in optimization_starts:
-                trajectory = [(start.copy(), float(model.forward_pass(start)))]
+                trajectory = [(start.copy(), float(model.forward_pass_collocation_mse(start)))]
 
                 def record_step(params, path=trajectory):
                     params = np.asarray(params, dtype=float).copy()
-                    loss = float(model.forward_pass(params))
+                    loss = float(model.forward_pass_collocation_mse(params))
                     path.append((params, loss))
 
                 result = minimize(
-                    model.forward_pass,
+                    model.forward_pass_collocation_mse,
                     x0=np.asarray(start, dtype=float),
                     method="L-BFGS-B",
                     bounds=parameter_bounds,
-                    jac=jax.grad(model.forward_pass, argnums=0),
+                    jac=jax.grad(model.forward_pass_collocation_mse, argnums=0),
                     callback=record_step,
                     options={"maxls": 10},
                 )
@@ -213,7 +213,7 @@ def plot_loss_landscapes():
                     marker="o",
                     markersize=3.5,
                     markeredgecolor="black",
-                    label=f"run {run_index} (CV MSE={final_loss:.3g})",
+                    label=f"run {run_index} (collocation MSE={final_loss:.3g})",
                     zorder=5,
                 )
                 ax.scatter(*path[0], color=color, edgecolor="black", marker="s", s=48, zorder=6)
@@ -254,15 +254,15 @@ def plot_solution_comparison():
 
     diffusion_x_values = np.linspace(0.2, 2.0, 12)
     diffusion_y_values = np.linspace(0.05, 1.0, 12)
-    cv_mse = np.empty((len(diffusion_x_values), len(diffusion_y_values)))
+    collocation_mse = np.empty((len(diffusion_x_values), len(diffusion_y_values)))
     for i, dx in enumerate(diffusion_x_values):
         for j, dy in enumerate(diffusion_y_values):
             params = np.asarray([dx, dy], dtype=float)
             model.pde_hyperparam_values = [float(dx), float(dy)]
             model.pde_hyperparams = dict(zip(model.pde_hyperparam_sym, model.pde_hyperparam_values))
-            cv_mse[i, j] = float(model.forward_pass(params))
+            collocation_mse[i, j] = float(model.forward_pass_collocation_mse(params))
 
-    best_idx = np.unravel_index(np.argmin(cv_mse), cv_mse.shape)
+    best_idx = np.unravel_index(np.argmin(collocation_mse), collocation_mse.shape)
     optimized_params = np.asarray([diffusion_x_values[best_idx[0]], diffusion_y_values[best_idx[1]]], dtype=float)
 
     solution_axis = np.linspace(0.0, np.pi, 60)

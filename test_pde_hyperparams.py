@@ -1,7 +1,57 @@
 import numpy as np
 import sympy as sp
+from sklearn.model_selection import KFold
 
 from pisvr import PDE, PISVR
+
+
+def test_collocation_objective_uses_full_data_shape():
+    diffusion_x = sp.Symbol("diffusion_x", real=True)
+    diffusion_y = sp.Symbol("diffusion_y", real=True)
+
+    def operator(expr, variables, coefficients):
+        return coefficients[0] * sp.diff(expr, variables[0], 2) + coefficients[1] * sp.diff(expr, variables[1], 2)
+
+    def exact_solution(points):
+        x, y = points[:, 0], points[:, 1]
+        return np.sin(x) * np.sin(y)
+
+    pde = PDE(
+        operator,
+        lambda point: -(0.8 + 0.4) * np.sin(point[0]) * np.sin(point[1]),
+        hyperparams={diffusion_x: 0.8, diffusion_y: 0.4},
+    )
+    model = PISVR(
+        m=2,
+        lam=0.7,
+        eps1=0.02,
+        C1=10.0,
+        eps2=0.01,
+        C2=10.0,
+        pde=pde,
+    )
+
+    rng = np.random.default_rng(7)
+    X_data = rng.uniform(0.0, np.pi, size=(22, 2))
+    y_data = exact_solution(X_data)
+    phys_axis = np.linspace(0.0, np.pi, 6)
+    X_phys = np.column_stack([axis.ravel() for axis in np.meshgrid(phys_axis, phys_axis)])
+    model.X_data = np.asarray(X_data)
+    model.y_data = np.asarray(y_data)
+    model.X_phys = np.asarray(X_phys)
+    model.optimize_pde_hyperparams = True
+    model.svr_hyperparams = []
+    model.lam_index = None
+    model.C1_index = None
+    model.C2_index = None
+    model.split = list(KFold(n_splits=5, shuffle=True, random_state=42).split(model.X_data))
+    model.layers = [
+        model.define_cvxpylayer(len(train_idx), len(model.X_phys))
+        for train_idx, _ in model.split
+    ]
+
+    value = float(model.forward_pass_collocation_mse(np.asarray([0.8, 0.4], dtype=float)))
+    assert np.isfinite(value)
 
 
 def test_fixed_pde_parameter():
